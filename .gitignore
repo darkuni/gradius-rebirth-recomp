@@ -1,0 +1,26 @@
+# Game data - never commit (bring your own WAD)
+*.wad
+*.dol
+/game
+/orig
+/nand
+data/
+wad/
+
+# Generated code (a translation of the game executable) and build output
+src/gen/
+src/build*/
+build/
+/shots/
+/run*/
+
+# Tools fetched separately
+tools/dtk
+tools/dtk*
+
+# Misc
+__pycache__/
+*.pyc
+*.ini
+*.ppm
+.DS_Store

@@ -1,0 +1,8 @@
+object: orig/WGGE/main.dol
+hash: ce8939570323401023f44f172e74fd8346d55e84
+symbols: config/symbols.txt
+splits: config/splits.txt
+detect_objects: true
+detect_strings: true
+write_asm: true
+quick_analysis: false
