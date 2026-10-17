@@ -1,7 +1,7 @@
 """Match functions between two DOLs by masked instruction signature.
 usage: xmatch.py ref.dol ref_symbols.txt our.dol our_symbols.txt out.json"""
-import sys,struct,re,json,hashlib,collections
-sys.path.insert(0,'/home/claude/choco/src')
+import sys,os,struct,re,json,hashlib,collections
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
 from dol import Dol, load_symbols
 def mask(w):
     op=w>>26

@@ -53,3 +53,15 @@ SHOT_EVERY=150 SHOT_DIR=shots TIMEOUT=120 ./build/gradius ../game
 
 Ship `gradius.exe` with `SDL2.dll`, `libwinpthread-1.dll` and `src/runtime/ipl-font-licenses.txt` next to
 a `game` folder.
+
+## Disclaimer
+
+This is an unofficial fan project. It is **not affiliated with, endorsed by, or sponsored by** Konami Digital Entertainment, M2 Co., Ltd.
+or Nintendo. *Gradius ReBirth* and all related names and marks belong to their respective owners. This
+repository contains no game code or game data; you need your own legally obtained copy of the game.
+
+## License
+
+The project's own code is released under the [MIT License](LICENSE). Bundled third-party
+components (fonts, OpenGL headers) keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
