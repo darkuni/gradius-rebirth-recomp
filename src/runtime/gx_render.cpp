@@ -951,6 +951,7 @@ static bool g_batch_open = false;
 
 void gx_flush() {
     if (g_batch.empty()) { g_batch_open = false; return; }
+    gl_platform_make_current();
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, g_batch.size() * sizeof(Vtx), g_batch.data(), GL_STREAM_DRAW);

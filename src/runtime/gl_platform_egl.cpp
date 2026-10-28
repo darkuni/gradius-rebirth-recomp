@@ -30,7 +30,21 @@ bool gl_platform_init(int, int) {
     return true;
 }
 static thread_local bool t_current = false;
-void gl_platform_make_current() { if (t_current) return; eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, g_ctx); t_current = true; }
+void gl_platform_make_current() {
+    if (t_current) return;
+    if (!eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, g_ctx)) {
+        static int n = 0;
+        if (n++ < 5) fprintf(stderr, "[gl] eglMakeCurrent failed (%x): context still current on another thread\n", eglGetError());
+        return;
+    }
+    t_current = true;
+}
+// Called before this host thread hands the emulated CPU to another one (GX work can then run there).
+void gl_platform_release() {
+    if (!t_current) return;
+    eglMakeCurrent(g_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    t_current = false;
+}
 // Simulated sound device for headless runs: pulls 32 kHz audio in real time from the
 // jitter buffer so dropouts can be counted (see the [audio] line in the perf log).
 #include "audio_ring.h"

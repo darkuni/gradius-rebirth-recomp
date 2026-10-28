@@ -41,7 +41,13 @@ static std::condition_variable g_pcv;
 static void present_thread();
 static thread_local bool t_current = false;
 
-bool gl_platform_init(int w, int h) {
+// The window lives on its own UI thread, which pumps window messages all the time (Windows
+// delivers them only to the thread that created the window). The renderer's GL context is
+// made current by whichever emulation thread does GX work and released when that thread
+// hands the emulated CPU to another one.
+static std::atomic<int> g_ui_state{0};            // 0 starting, 1 ready, -1 failed
+std::atomic<unsigned long> g_ui_polls{0};         // UI thread heartbeat (status line)
+static bool ui_create() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         fprintf(stderr, "[sdl] init failed: %s\n", SDL_GetError());
         return false;
@@ -63,13 +69,12 @@ bool gl_platform_init(int w, int h) {
     g_glc = SDL_GL_CreateContext(g_win);                      // renderer (shares textures/syncs)
     if (!g_glc) { fprintf(stderr, "[sdl] GL context failed: %s\n", SDL_GetError()); return false; }
     SDL_GL_MakeCurrent(g_win, g_glc);
-    t_current = true;
 #ifdef _WIN32
     if (!gl_load(SDL_GL_GetProcAddress)) return false;
 #endif
     SDL_GL_SetSwapInterval(0);
-    std::thread(present_thread).detach();
     fprintf(stderr, "[gl] %s | %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    SDL_GL_MakeCurrent(g_win, nullptr);                       // free for the emulation threads
     // audio: 32 kHz stereo s16, fed from the AX output
     SDL_AudioSpec want = {}, have = {};
     want.freq = 32000; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 512;
@@ -80,13 +85,45 @@ bool gl_platform_init(int w, int h) {
         if (SDL_IsGameController(i)) { g_pad = SDL_GameControllerOpen(i); break; }
     if (g_pad) fprintf(stderr, "[input] controller: %s\n", SDL_GameControllerName(g_pad));
     else fprintf(stderr, "[input] no controller found (keyboard active; controllers can be plugged in any time)\n");
+    return true;
+}
+static bool ui_poll();
+static void ui_thread() {
+    if (!ui_create()) { g_ui_state = -1; return; }
+    std::thread(present_thread).detach();
+    g_ui_state = 1;
+    for (;;) {
+        Uint64 t0 = SDL_GetTicks64();
+        ui_poll();
+        Uint64 dt = SDL_GetTicks64() - t0;
+        g_ui_polls++;
+        if (dt > 500) fprintf(stderr, "[ui] event pump took %llu ms\n", (unsigned long long)dt);
+        SDL_Delay(2);
+    }
+}
+
+bool gl_platform_init(int w, int h) {
+    std::thread(ui_thread).detach();
+    while (g_ui_state.load() == 0) SDL_Delay(1);
+    if (g_ui_state.load() < 0) return false;
+    gl_platform_make_current();
     (void)w; (void)h;
     return true;
 }
 
+void gl_platform_release() {
+    if (!t_current) return;
+    SDL_GL_MakeCurrent(g_win, nullptr);
+    t_current = false;
+}
+
 void gl_platform_make_current() {
     if (t_current) return;
-    SDL_GL_MakeCurrent(g_win, g_glc);
+    if (SDL_GL_MakeCurrent(g_win, g_glc) != 0) {
+        static int n = 0;
+        if (n++ < 5) fprintf(stderr, "[gl] MakeCurrent failed: %s\n", SDL_GetError());
+        return;
+    }
     t_current = true;
 }
 
@@ -176,7 +213,9 @@ static void apply_action(int a) {
     else if (a == OV_QUIT) exit(0);
 }
 
-bool gl_platform_poll() {
+// Window/input pump (UI thread only).
+bool gl_platform_poll() { return true; }
+static bool ui_poll() {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) exit(0);
