@@ -7,8 +7,7 @@
 data/
 wad/
 
-# Generated code (a translation of the game executable) and build output
-src/gen/
+# Build output
 src/build*/
 build/
 /shots/

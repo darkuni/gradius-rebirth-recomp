@@ -6,8 +6,14 @@ replaces the Wii hardware, IOS and the DSP.
 
 ![Running from the recompiled code](docs/boot-sequence.png)
 
-**No game data is included.** You need your own copy of the game as a WAD. The build turns your WAD
-into a `game` folder and generates the C++ from the executable inside it.
+**No game data is included.** You need your own copy of the game as a WAD (WiiWare, NTSC-U).
+
+## Download
+
+Get the latest `GradiusReBirth-<version>-win64.zip` from [Releases](https://github.com/darkuni/gradius-rebirth-recomp/releases),
+unzip it, drag your WAD onto `make-game-folder.bat` (needs [Python 3.11+](https://www.python.org/downloads/))
+and run `gradius.exe`. The zip's `README.txt` has the controls and keys. To build it yourself, see
+[Building](#building).
 
 ## Status
 
@@ -36,8 +42,9 @@ Changes:
 
 ## Building
 
-There is no prebuilt download: the exe contains the game's own code (translated to C++), so it is built
-from your WAD. Everything below is tested on Ubuntu 24.04; on Windows 10/11 use WSL (`wsl --install -d Ubuntu-24.04`
+The generated C++ is in `src/gen` (made with step 2 from the NTSC-U executable), so step 2 is only needed
+to regenerate it. GitHub Actions builds every push (see `.github/workflows/build-windows.yml`); version tags
+publish a release. Everything below is tested on Ubuntu 24.04; on Windows 10/11 use WSL (`wsl --install -d Ubuntu-24.04`
 in an administrator PowerShell, then open "Ubuntu"). The build cross-compiles a Windows exe.
 
 **1. Tools** (once)
@@ -107,7 +114,8 @@ All layouts: Start/Enter = +, Back/Backspace = -, Guide/H = HOME.
 
 This is an unofficial fan project. It is **not affiliated with, endorsed by, or sponsored by** Konami Digital Entertainment, M2 Co., Ltd.
 or Nintendo. *Gradius ReBirth* and all related names and marks belong to their respective owners. This
-repository contains no game code or game data; you need your own legally obtained copy of the game.
+repository and its releases contain no game data (graphics, sound, levels): those come from your own
+legally obtained WAD. `src/gen` and the release exe contain code machine-translated from the game's executable.
 
 ## License
 
