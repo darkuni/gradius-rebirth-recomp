@@ -1,11 +1,13 @@
 name: Build Windows
 
 # Every push to main builds the Windows package (download it from the run's "Artifacts").
-# Pushing a version tag (v0.3, v0.4, ...) also publishes it as a GitHub Release.
+# Publishing a GitHub Release (or pushing a v* tag) builds it and attaches the zip to the release.
 on:
   push:
     branches: [main]
     tags: ['v*']
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
