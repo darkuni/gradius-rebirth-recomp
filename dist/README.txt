@@ -3,11 +3,9 @@ https://github.com/darkuni/gradius-rebirth-recomp
 
 No game data is included. You need your own Gradius ReBirth WAD (WiiWare, NTSC-U).
 
-Setup (once)
-  1. Install Python 3.11 or newer from python.org (tick "Add python.exe to PATH").
-  2. Drag your WAD onto make-game-folder.bat (or put it in this folder and double-click the .bat).
-     It creates the "game" folder; the WAD isn't needed after that.
-  3. Run gradius.exe.
+Setup
+  Put your WAD in this folder and run gradius.exe. On the first start it builds the "game"
+  folder from it (a few seconds); after that the WAD isn't needed any more.
 
 Requirements: 64-bit Windows 10/11, a GPU with OpenGL 3.3.
 

@@ -41,11 +41,10 @@ jobs:
           V=${GITHUB_REF_NAME}
           [[ "$GITHUB_REF" == refs/tags/* ]] || V=dev-${GITHUB_SHA::7}
           P=GradiusReBirth
-          mkdir -p pkg/$P/tools
+          mkdir -p pkg/$P
           cp src/build-win/gradius.exe SDL2-2.30.9/x86_64-w64-mingw32/bin/SDL2.dll \
              /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll src/runtime/ipl-font-licenses.txt \
-             dist/README.txt dist/make-game-folder.bat LICENSE THIRD_PARTY_NOTICES.md pkg/$P/
-          cp tools/prepare_wad.py tools/lz11.py pkg/$P/tools/
+             dist/README.txt LICENSE THIRD_PARTY_NOTICES.md pkg/$P/
           sed -i "s/@VERSION@/$V/" pkg/$P/README.txt
           (cd pkg && zip -qr ../GradiusReBirth-$V-win64.zip $P)
           echo "ZIP=GradiusReBirth-$V-win64.zip" >> $GITHUB_ENV

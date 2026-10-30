@@ -11,8 +11,8 @@ replaces the Wii hardware, IOS and the DSP.
 ## Download
 
 Get the latest `GradiusReBirth-<version>-win64.zip` from [Releases](https://github.com/darkuni/gradius-rebirth-recomp/releases),
-unzip it, drag your WAD onto `make-game-folder.bat` (needs [Python 3.11+](https://www.python.org/downloads/))
-and run `gradius.exe`. The zip's `README.txt` has the controls and keys. To build it yourself, see
+unzip it, put your WAD in the same folder and run `gradius.exe`: the first start builds the
+`game` folder from it. Nothing else to install. The zip's `README.txt` has the controls and keys. To build it yourself, see
 [Building](#building).
 
 ## Status
@@ -22,6 +22,8 @@ and run `gradius.exe`. The zip's `README.txt` has the controls and keys. To buil
 - Menus confirm with the 2 button (gamepad A in the default sideways layout).
 
 Changes:
+- **v0.4** (Oct 30, 2026): no Python or setup tool needed - on the first start the game builds its `game` folder
+  from your WAD placed next to the exe (decryption and unpacking are built in).
 - **v0.3** (Oct 30, 2026): graphics (the GX command stream) is processed and drawn on its own thread beside the
   game thread, like the Wii's GPU; faster vertex handling (index buffers, cached vertex setup); audio is sent
   to the sound card straight from the mixer (no clicks at 3 ms frame boundaries); `gradius.log` next to the exe.

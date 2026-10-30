@@ -384,6 +384,13 @@ static std::string exe_path(const char* argv0) {
     return argv0 ? argv0 : "";
 }
 
+#include "game_setup.h"
+#ifndef GAME_SETUP_DISC
+#define GAME_SETUP_DISC 0
+#endif
+#ifndef GAME_SETUP_WHAT
+#define GAME_SETUP_WHAT "Gradius ReBirth WAD"
+#endif
 int main(int argc, char** argv) {
     // game data: argument, or a "game" folder next to / above the executable holding
     // main.dol, tmd.bin, ticket.bin and content/<index>.app (see tools/prepare_wad.py)
@@ -403,14 +410,21 @@ int main(int argc, char** argv) {
             if (found) break;
         }
         if (!found) {
-            fprintf(stderr, "Game data not found. Run tools/prepare_wad.py on your WAD to make a 'game' folder\n"
-                            "next to " GAME_EXE ", or run: " GAME_EXE " <path to game folder>\n");
+            // first start: make the game folder from the player's own WAD / disc image next to the exe
+            std::string err, used;
+            int r = game_setup_auto(exedir, exedir + "game", GAME_SETUP_DISC != 0, err, used);
+            if (r > 0) { rootstr = exedir + "game"; fprintf(stderr, "[setup] done\n"); }
+            else {
+                std::string msg = r < 0 ? "Could not set up the game from " + used + ":\n" + err
+                    : std::string("Game files not found.\n\nPut your own " GAME_SETUP_WHAT " in the same folder as " GAME_EXE
+                                  ".exe and start it again: the game folder is made from it on the first start.\n\n"
+                                  "(Or start it as: " GAME_EXE ".exe <path to game folder>)");
+                fprintf(stderr, "%s\n", msg.c_str());
 #ifdef _WIN32
-            MessageBoxA(nullptr, "Game data not found.\n\nPut the 'game' folder (made by prepare_wad from your WAD) next to "
-                                 GAME_EXE ".exe, or start it as:\n  " GAME_EXE ".exe <path to game folder>",
-                        GAME_NAME, MB_ICONERROR);
+                MessageBoxA(nullptr, msg.c_str(), GAME_NAME, MB_ICONERROR);
 #endif
-            return 1;
+                return 1;
+            }
         }
     }
     const char* root = rootstr.c_str();
