@@ -42,8 +42,10 @@ static void ai_thread() {
         if (g_ai_inflight.load() > g_ai_limit) { g_ai_skipped++; continue; }
         g_ai_inflight++;
         post_irq([](Ctx* c) {
-            // the buffer that just "played"
-            if (g_ai_buf && g_ai_len) {
+            // the buffer that just "played" - only for games that don't mix through AX: AX frames go
+            // to the host straight from the mixer (ax_dsp.cpp), because reading the AI buffer here
+            // races the next mix (repeated, skipped or half-written 3 ms blocks = clicks)
+            if (g_ax_frames == 0 && g_ai_buf && g_ai_len) {
                 std::vector<int16_t> s(g_ai_len / 2);
                 for (uint32_t i = 0; i < g_ai_len / 2; i++) s[i] = (int16_t)R16(g_ai_buf + 2 * i);
                 audio_out(s.data(), (int)(g_ai_len / 4));

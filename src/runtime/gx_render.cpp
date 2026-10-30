@@ -31,6 +31,7 @@ static GLuint g_fbo, g_efb_color, g_efb_depth, g_vao, g_vbo, g_vs;
 static GLuint g_xfb_tex;            // last presented frame
 static int g_xfb_w = 640, g_xfb_h = 480;
 static uint64_t g_frame = 0;
+uint64_t gx_frame_count() { return g_frame; }
 static uint64_t g_tex_epoch = 1;   // bumps each frame and on TLUT loads: texture cache re-validates
 char g_perf_text[128] = "";
 #include <chrono>
@@ -245,8 +246,15 @@ struct DrawSetup {
     LightP lights[8];
 };
 static DrawSetup g_ds;
+// The setup only changes when CP registers, XF registers or XF light memory are written
+// (gx_xf_write / gx_cp_written), or the draw uses another VAT; 30-40k draws a frame mostly don't.
+static bool g_vtx_dirty = true;
+static int g_vtx_vat = -1;
+void gx_cp_written() { g_vtx_dirty = true; }
 
 static void setup_vertex_pipeline(int vat) {
+    if (!g_vtx_dirty && vat == g_vtx_vat) return;
+    g_vtx_dirty = false; g_vtx_vat = vat;
     DrawSetup& d = g_ds;
     const uint32_t lo = g_gx.cp[0x50], hi = g_gx.cp[0x60];
     const uint32_t A = g_gx.cp[0x70 + vat], B = g_gx.cp[0x80 + vat], C = g_gx.cp[0x90 + vat];
@@ -368,7 +376,9 @@ static inline void light_channel(const ChanP& cp, bool alpha, const float* vpos,
         float att = 1.f;
         if (cp.attn) {
             if (cp.spot) {
-                float cs = std::max(0.f, -(L[0] * Lp.ld[0] + L[1] * Lp.ld[1] + L[2] * Lp.ld[2]));
+                // GXInitLightDir stores the direction negated, so the hardware's spot cosine is
+                // dot(vertex->light, stored dir) with no further sign flip
+                float cs = std::max(0.f, L[0] * Lp.ld[0] + L[1] * Lp.ld[1] + L[2] * Lp.ld[2]);
                 float num = std::max(0.f, Lp.a0 + Lp.a1 * cs + Lp.a2 * cs * cs);
                 float den = Lp.k0 + Lp.k1 * dist + Lp.k2 * dist2;
                 att = den != 0 ? num / den : 0;
@@ -677,8 +687,8 @@ static void apply_state() {
 void gx_xf_write(uint32_t addr, uint32_t val) {
     static long fd = getenv("FRAMEDUMP") ? atol(getenv("FRAMEDUMP")) : -1;
     if ((long)g_frame == fd && addr < 0x0C) fprintf(g_log, "[xf] %03X = %08X (%f)\n", addr, val, u2f(val));
-    if (addr < 0x1000) g_gx.xf_mem[addr] = val;
-    else if (addr < 0x1100) g_gx.xf_reg[addr - 0x1000] = val;
+    if (addr < 0x1000) { g_gx.xf_mem[addr] = val; if (addr >= 0x600) g_vtx_dirty = true; }
+    else if (addr < 0x1100) { g_gx.xf_reg[addr - 0x1000] = val; g_vtx_dirty = true; }
 }
 void gx_xf_indexed(uint8_t op, uint32_t arg) {
     static long fd = getenv("FRAMEDUMP") ? atol(getenv("FRAMEDUMP")) : -1;
@@ -811,12 +821,13 @@ static void efb_copy_impl(uint32_t val) {
         {
             static uint64_t t0 = now_ns_r(), f0 = 0;
 #ifdef _WIN32
-            static bool perf = g_cfg.show_perf;
+            static bool perf = true;   // perf and audio stats go to the log file every 5 s
 #else
             static bool perf = getenv("PERF") != nullptr;
 #endif
             extern uint64_t g_vi_count, g_ax_frames;
-            static uint64_t vi0 = 0, ax0 = 0;
+            static uint64_t vi0 = 0, ax0 = 0, gb0 = 0;
+            extern std::atomic<uint64_t> g_gx_busy_ns;
             uint64_t t = now_ns_r();
             static uint64_t pt0 = t, pf0 = 0;
             extern std::atomic<uint64_t> g_idle_ns;
@@ -834,13 +845,13 @@ static void efb_copy_impl(uint32_t val) {
                   static uint64_t u0 = 0, d0 = 0, k0 = 0;
                   fprintf(g_log, "[audio] underruns %llu, dropped %llu frames, AI periods skipped %llu, buffered %d ms\n",
                           (unsigned long long)(a.underruns - u0), (unsigned long long)(a.dropped_frames - d0), (unsigned long long)(g_ai_skipped - k0), a.buffered_ms);
-                  u0 = a.underruns; d0 = a.dropped_frames; k0 = g_ai_skipped; }
-                fprintf(g_log, "[perf] %.1f fps | VI %.1f/s (want 59.9) | audio %.0f/s (want 333) | GPU draw %.0f%%, copies %.0f%% of time | %.0f draws -> %.0f GL calls per frame\n",
-                        (g_frame - f0) / sec, (g_vi_count - vi0) / sec, (g_ax_frames - ax0) / sec, g_ns_draw / 1e7 / sec, g_ns_copy / 1e7 / sec,
+                  u0 = a.underruns; d0 = a.dropped_frames; k0 = g_ai_skipped; fflush(g_log); }
+                fprintf(g_log, "[perf] %.1f fps | VI %.1f/s (want 59.9) | audio %.0f/s (want 333) | GX thread busy %.0f%%, copies %.0f%% of time | %.0f draws -> %.0f GL calls per frame\n",
+                        (g_frame - f0) / sec, (g_vi_count - vi0) / sec, (g_ax_frames - ax0) / sec, (double)(g_gx_busy_ns.load() - gb0) / 1e7 / sec, g_ns_copy / 1e7 / sec,
                         (double)g_draw_calls_in / std::max<uint64_t>(1, g_frame - f0), (double)g_batches / std::max<uint64_t>(1, g_frame - f0));
                 g_draw_calls_in = g_batches = 0;
                 fflush(g_log);
-                t0 = t; f0 = g_frame; g_ns_draw = g_ns_copy = 0; vi0 = g_vi_count; ax0 = g_ax_frames;
+                t0 = t; f0 = g_frame; g_ns_draw = g_ns_copy = 0; gb0 = g_gx_busy_ns.load(); vi0 = g_vi_count; ax0 = g_ax_frames;
             }
         }
         if (g_gxdbg && g_frame % 60 == 0) fprintf(g_log, "[frame %llu] draws %d copy %dx%d%s\n", (unsigned long long)g_frame, g_frame_draws, w, h, g_frame_tex.c_str());
@@ -912,9 +923,12 @@ static void efb_copy_impl(uint32_t val) {
         uint32_t cm = bp[0x41], zm = bp[0x40];
         glEnable(GL_SCISSOR_TEST);
         glScissor(sx * RS, (EFB_H - sy - h) * RS, w * RS, h * RS);
-        glColorMask((cm >> 3) & 1, (cm >> 3) & 1, (cm >> 3) & 1, (cm >> 4) & 1);
+        // RGB8/RGB565 EFB formats have no alpha: it reads back (and copies) as 1.0. Keep the GL
+        // framebuffer's alpha at 1 so EFB->texture copies match (draws never write it then).
+        bool efb_alpha = (bp[0x43] & 7) == 1;
+        glColorMask((cm >> 3) & 1, (cm >> 3) & 1, (cm >> 3) & 1, efb_alpha ? ((cm >> 4) & 1) : 1);
         glDepthMask((zm >> 4) & 1);
-        glClearColor((ar & 255) / 255.f, ((gb >> 8) & 255) / 255.f, (gb & 255) / 255.f, ((ar >> 8) & 255) / 255.f);
+        glClearColor((ar & 255) / 255.f, ((gb >> 8) & 255) / 255.f, (gb & 255) / 255.f, efb_alpha ? ((ar >> 8) & 255) / 255.f : 1.f);
         glClearDepth(z / 16777215.0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
@@ -946,20 +960,29 @@ void gx_bp_hook(uint32_t reg, uint32_t val) {
 // Draws are batched: transformed triangles accumulate in g_batch while the pixel
 // pipeline state (BP registers) is unchanged, and go to GL as one draw call.
 // Vertex transform runs on the CPU, so XF/CP changes never break a batch.
+// Vertices are stored once each and the triangles as indices (quads and strips share vertices).
 static std::vector<Vtx> g_batch;
+static std::vector<uint32_t> g_bidx;
 static bool g_batch_open = false;
+static GLuint g_ibo = 0;
 
 void gx_flush() {
-    if (g_batch.empty()) { g_batch_open = false; return; }
+    if (g_bidx.empty()) { g_batch.clear(); g_batch_open = false; return; }
     gl_platform_make_current();
     glBindVertexArray(g_vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
     glBufferData(GL_ARRAY_BUFFER, g_batch.size() * sizeof(Vtx), g_batch.data(), GL_STREAM_DRAW);
-    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)g_batch.size());
+    if (!g_ibo) glGenBuffers(1, &g_ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, g_bidx.size() * 4, g_bidx.data(), GL_STREAM_DRAW);
+    glDrawElements(GL_TRIANGLES, (GLsizei)g_bidx.size(), GL_UNSIGNED_INT, nullptr);
     g_batch.clear();
+    g_bidx.clear();
     g_batch_open = false;
     g_batches++;
 }
+// GX thread found no more commands: push out what is batched so far
+void gx_flush_idle() { if (g_batch_open) gx_flush(); }
 // called by the FIFO before a BP register changes value
 void gx_state_changing() { if (g_batch_open) gx_flush(); }
 
@@ -998,7 +1021,6 @@ static void setup_draw_state(uint8_t prim, uint32_t count, const std::vector<Vtx
 }
 
 void gx_draw(uint8_t prim, int vat, uint32_t count, const uint8_t* data, int vsize) {
-    ScopeNs _sc(g_ns_draw);
     if (!ensure_gl() || count == 0) return;
     g_frame_draws++;
     g_draw_calls_in++;
@@ -1006,8 +1028,8 @@ void gx_draw(uint8_t prim, int vat, uint32_t count, const uint8_t* data, int vsi
     verts.resize(count);
     setup_vertex_pipeline(vat);
     const uint8_t* p = data;
+    RawVtx r;   // fields the format doesn't carry keep their defaults for the whole draw
     for (uint32_t i = 0; i < count; i++) {
-        RawVtx r;
         const uint8_t* start = p;
         decode_vertex(p, r);
         p = start + vsize;
@@ -1031,6 +1053,15 @@ void gx_draw(uint8_t prim, int vat, uint32_t count, const uint8_t* data, int vsi
     }
     static long fdump = getenv("FRAMEDUMP") ? atol(getenv("FRAMEDUMP")) : -1;
     if ((long)g_frame == fdump) {
+        static long lastl = -1;
+        if (lastl != (long)g_frame) {
+            lastl = (long)g_frame;
+            for (int l = 0; l < 8; l++) {
+                const LightP& L = g_ds.lights[l];
+                fprintf(g_log, "[light%d] col %.2f %.2f %.2f %.2f a %.3f %.3f %.3f k %.3f %.3f %.3f pos %.1f %.1f %.1f dir %.3f %.3f %.3f raw3 %08X\n", l,
+                        L.col[0], L.col[1], L.col[2], L.col[3], L.a0, L.a1, L.a2, L.k0, L.k1, L.k2, L.lp[0], L.lp[1], L.lp[2], L.ld[0], L.ld[1], L.ld[2], g_gx.xf_mem[0x600 + l * 16 + 3]);
+            }
+        }
         int ns = ((g_gx.bp[0] >> 10) & 15) + 1;
         fprintf(g_log, "[scis] %06X %06X off %06X ", g_gx.bp[0x20], g_gx.bp[0x21], g_gx.bp[0x59]);
         fprintf(g_log, "[draw] prim %02X n %u tex0 %08X fmt %d | gen %06X z %06X cm0 %06X cm1 %06X pe %06X ac %06X | ",
@@ -1046,25 +1077,27 @@ void gx_draw(uint8_t prim, int vat, uint32_t count, const uint8_t* data, int vsi
         fprintf(g_log, "| reg0 %.2f %.2f %.2f %.2f k0 %.2f %.2f %.2f %.2f c0 %.2f %.2f %.2f %.2f x %.3f y %.3f z %.3f w %.3f vp %.1f %.1f %.1f %.1f proj %.3f %.3f %.3f %.3f %.3f %.3f t%u\n", g_tevreg[0][0], g_tevreg[0][1], g_tevreg[0][2], g_tevreg[0][3],
                 g_konst[0][0], g_konst[0][1], g_konst[0][2], g_konst[0][3], verts[0].c0[0], verts[0].c0[1], verts[0].c0[2], verts[0].c0[3], verts[0].pos[0], verts[0].pos[1], verts[0].pos[2], verts[0].pos[3], xff(0x101A), xff(0x101B), xff(0x101D), xff(0x101E), xff(0x1020), xff(0x1021), xff(0x1022), xff(0x1023), xff(0x1024), xff(0x1025), g_gx.xf_reg[0x26]);
     }
-    // append as a triangle list (winding preserved)
-    std::vector<Vtx>& b = g_batch;
+    // append: vertices once, triangles as indices (winding preserved)
+    const uint32_t base = (uint32_t)g_batch.size();
+    g_batch.insert(g_batch.end(), verts.begin(), verts.begin() + count);
+    std::vector<uint32_t>& b = g_bidx;
     switch (prim) {
         case 0x80:   // quads
             for (uint32_t i = 0; i + 3 < count; i += 4) {
-                b.push_back(verts[i]); b.push_back(verts[i + 1]); b.push_back(verts[i + 2]);
-                b.push_back(verts[i]); b.push_back(verts[i + 2]); b.push_back(verts[i + 3]);
+                uint32_t v = base + i;
+                b.insert(b.end(), {v, v + 1, v + 2, v, v + 2, v + 3});
             }
             break;
-        case 0x90: b.insert(b.end(), verts.begin(), verts.begin() + count / 3 * 3); break;
+        case 0x90: for (uint32_t i = 0; i < count / 3 * 3; i++) b.push_back(base + i); break;
         case 0x98:   // strip
             for (uint32_t i = 0; i + 2 < count; i++) {
-                if (i & 1) { b.push_back(verts[i + 1]); b.push_back(verts[i]); }
-                else { b.push_back(verts[i]); b.push_back(verts[i + 1]); }
-                b.push_back(verts[i + 2]);
+                uint32_t v = base + i;
+                if (i & 1) b.insert(b.end(), {v + 1, v, v + 2});
+                else b.insert(b.end(), {v, v + 1, v + 2});
             }
             break;
         case 0xA0:   // fan
-            for (uint32_t i = 1; i + 1 < count; i++) { b.push_back(verts[0]); b.push_back(verts[i]); b.push_back(verts[i + 1]); }
+            for (uint32_t i = 1; i + 1 < count; i++) b.insert(b.end(), {base, base + i, base + i + 1});
             break;
     }
     static bool nobatch = getenv("GX_NOBATCH") != nullptr;

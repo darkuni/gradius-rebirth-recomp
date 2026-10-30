@@ -4,7 +4,15 @@
 #include "hle.h"
 #include "gx_state.h"
 #include "gx_render.h"
+void gx_cp_written();
 #include <vector>
+#include <atomic>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <chrono>
+#include <algorithm>
+void gx_flush_idle();
 
 GXState g_gx;
 static std::vector<uint8_t> g_fifo;    // pending, unparsed bytes
@@ -102,7 +110,7 @@ static long parse_cmd(const uint8_t* p, size_t n, bool in_dl) {
         case 0x00: return 1;                                   // NOP
         case 0x08:                                             // load CP
             if (n < 6) return 0;
-            g_gx.cp[p[1]] = rd32(p + 2);
+            g_gx.cp[p[1]] = rd32(p + 2); gx_cp_written();
             return 6;
         case 0x10: {                                           // load XF
             if (n < 5) return 0;
@@ -143,11 +151,11 @@ static long parse_cmd(const uint8_t* p, size_t n, bool in_dl) {
     }
 }
 
-void fifo_write(uint32_t v, int size) {
-    if (size == 4) { g_fifo.push_back(v >> 24); g_fifo.push_back(v >> 16); g_fifo.push_back(v >> 8); g_fifo.push_back(v); }
-    else if (size == 2) { g_fifo.push_back(v >> 8); g_fifo.push_back(v); }
-    else g_fifo.push_back(v);
-    g_gx.stats.fifo_bytes += size;
+// The FIFO is parsed and rendered on a GX thread of its own (like the real GPU working beside the
+// CPU): the game's FIFO writes only append to a ring buffer. The game still syncs with the GPU the
+// way it does on hardware, through draw-done / token interrupts, which the GX thread raises when it
+// reaches them. GX_SYNC=1 parses on the writing thread instead (the old behaviour).
+static void parse_pending() {
     for (;;) {
         long k = parse_cmd(g_fifo.data() + g_rd, g_fifo.size() - g_rd, false);
         if (k == 0) break;
@@ -155,4 +163,71 @@ void fifo_write(uint32_t v, int size) {
         g_rd += k;
     }
     if (g_rd > 65536) { g_fifo.erase(g_fifo.begin(), g_fifo.begin() + g_rd); g_rd = 0; }
+}
+
+static const size_t kRing = 32u << 20;                      // 32 MiB of commands in flight at most
+static const size_t kMaxAhead = 12u << 20;                   // the CPU waits when the GPU is this far behind
+static uint8_t* g_ring = nullptr;
+static std::atomic<uint64_t> g_wpos{0}, g_rpos{0};
+static uint64_t g_wlocal = 0;
+static std::atomic<bool> g_gx_sleeping{false};
+static std::mutex g_gx_mx;
+static std::condition_variable g_gx_cv;
+static int g_threaded = -1;
+std::atomic<uint64_t> g_gx_busy_ns{0};
+
+static void gx_thread() {
+    for (;;) {
+        uint64_t r = g_rpos.load(std::memory_order_relaxed), w = g_wpos.load(std::memory_order_acquire);
+        if (r == w) {
+            // spin briefly (the next burst usually follows within microseconds), then sleep
+            int spins = 0;
+            while (r == (w = g_wpos.load(std::memory_order_acquire)) && spins < 2000) { spins++; std::this_thread::yield(); }
+            if (r == w) {
+                gx_flush_idle();
+                std::unique_lock<std::mutex> lk(g_gx_mx);
+                g_gx_sleeping.store(true);
+                g_gx_cv.wait_for(lk, std::chrono::milliseconds(1), [&] { return g_wpos.load(std::memory_order_acquire) != r; });
+                g_gx_sleeping.store(false);
+                continue;
+            }
+        }
+        size_t n = (size_t)std::min<uint64_t>(w - r, 1u << 20);
+        size_t off = (size_t)(r % kRing), first = std::min(n, kRing - off);
+        g_fifo.insert(g_fifo.end(), g_ring + off, g_ring + off + first);
+        if (first < n) g_fifo.insert(g_fifo.end(), g_ring, g_ring + (n - first));
+        g_rpos.store(r + n, std::memory_order_release);
+        auto t0 = std::chrono::steady_clock::now();
+        parse_pending();
+        g_gx_busy_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    }
+}
+
+void fifo_write(uint32_t v, int size) {
+    g_gx.stats.fifo_bytes += size;
+    if (g_threaded < 0) {
+        g_threaded = getenv("GX_SYNC") ? 0 : 1;
+        if (g_threaded) { g_ring = new uint8_t[kRing]; std::thread(gx_thread).detach(); }
+    }
+    if (!g_threaded) {
+        if (size == 4) { g_fifo.push_back(v >> 24); g_fifo.push_back(v >> 16); g_fifo.push_back(v >> 8); g_fifo.push_back(v); }
+        else if (size == 2) { g_fifo.push_back(v >> 8); g_fifo.push_back(v); }
+        else g_fifo.push_back(v);
+        parse_pending();
+        return;
+    }
+    if (g_wlocal - g_rpos.load(std::memory_order_acquire) > kMaxAhead) {
+        while (g_wlocal - g_rpos.load(std::memory_order_acquire) > kMaxAhead / 2) {
+            if (g_gx_sleeping.load()) g_gx_cv.notify_one();
+            std::this_thread::yield();
+        }
+    }
+    uint8_t b[4]; int k = 0;
+    if (size == 4) { b[0] = v >> 24; b[1] = v >> 16; b[2] = v >> 8; b[3] = v; k = 4; }
+    else if (size == 2) { b[0] = v >> 8; b[1] = v; k = 2; }
+    else { b[0] = v; k = 1; }
+    for (int i = 0; i < k; i++) g_ring[(g_wlocal + i) % kRing] = b[i];
+    g_wlocal += k;
+    g_wpos.store(g_wlocal, std::memory_order_release);
+    if (g_gx_sleeping.load(std::memory_order_relaxed)) { std::lock_guard<std::mutex> lk(g_gx_mx); g_gx_cv.notify_one(); }
 }

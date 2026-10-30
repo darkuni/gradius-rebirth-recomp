@@ -144,6 +144,11 @@ static void output(uint16_t volume, uint32_t lr) {
         W16(lr + 4 * i, (uint16_t)clamp16(l));
         W16(lr + 4 * i + 2, (uint16_t)clamp16(r));
     }
+    // hand the mixed frame to the host in mixing order (see hle_audio.cpp)
+    int16_t out[N * 2];
+    for (int i = 0; i < N; i++) { out[2 * i] = (int16_t)R16(lr + 4 * i); out[2 * i + 1] = (int16_t)R16(lr + 4 * i + 2); }
+    void audio_out(const int16_t* lr, int frames);
+    audio_out(out, N);
 }
 
 void ax_process(uint32_t list, uint32_t words) {
